@@ -1,4 +1,4 @@
-use std::{sync::mpsc, time::Duration};
+use std::sync::mpsc;
 
 use amiquip::{
     Connection, ConsumerMessage, ConsumerOptions, FieldTable, QueueDeclareOptions, Result,
@@ -12,8 +12,17 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use futures_util::{SinkExt, StreamExt, TryStreamExt};
-use tokio::{sync::watch, time::interval};
+use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
+use serde_json::from_str;
+use tokio::sync::watch;
+
+#[derive(Deserialize, Debug)]
+struct MQData {
+    num_points: usize,
+    color: String,
+    points: Vec<f64>,
+}
 
 fn get_data_from_rabbitmq(tx: mpsc::Sender<String>, stop_rx: watch::Receiver<()>) -> Result<()> {
     let mut connection = Connection::insecure_open("amqp://guest:guest@192.168.0.4")?;
@@ -38,8 +47,9 @@ fn get_data_from_rabbitmq(tx: mpsc::Sender<String>, stop_rx: watch::Receiver<()>
         match message {
             ConsumerMessage::Delivery(delivery) => {
                 let body = String::from_utf8_lossy(&delivery.body);
-                // println!("({:>3}) Received [{}]", i, body);
+
                 println!("({:>3}) Received ", i);
+                // println!("--> {:12} - Received data size: {}", "LOGGER", body.len());
                 if tx.send(body.to_string()).is_err() {
                     println!("Failed to send data to websocket");
                 }
@@ -79,6 +89,21 @@ async fn handle_socket(socket: WebSocket) {
 
     let send_task = tokio::spawn(async move {
         while let Ok(message) = rx.recv() {
+            // Test
+            match from_str::<MQData>(&message) {
+                Ok(mq_data) => {
+                    println!("--> {:12} - Deserialized data from RabbitMQ", "LOGGER");
+                    println!("Num points: {:?}", mq_data.num_points);
+                    println!("Data: {:?}", mq_data.points[0]);
+                }
+                Err(e) => {
+                    println!(
+                        "--> {:12} - Failed to deserialize data from RabbitMQ",
+                        "LOGGER"
+                    );
+                    println!("Error: {:?}", e);
+                }
+            }
             if sender.send(Message::Text(message)).await.is_err() {
                 println!("--> {:12} - Failed to send message to client", "LOGGER");
                 break;
